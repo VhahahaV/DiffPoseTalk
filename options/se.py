@@ -18,8 +18,14 @@ def add_model_options(parser: argparse.ArgumentParser):
 
 
 def add_data_options(parser: argparse.ArgumentParser):
-    parser.add_argument('--data_root', type=Path, default=Path('datasets/HDTF_TFHP/lmdb'),
-                        help='dataset path')
+    parser.add_argument('--data_root', type=Path, default=None,
+                        help='dataset path (legacy, use --data_roots instead)')
+    parser.add_argument('--data_roots', type=Path, nargs='+', default=None,
+                        help='multiple dataset root directories')
+    parser.add_argument('--data_jsons', type=str, nargs='+', default=None,
+                        help='multiple JSON index files (relative to data_roots or absolute)')
+    parser.add_argument('--val_jsons', type=str, nargs='+', default=None,
+                        help='validation JSON files (optional, defaults to data_jsons)')
     parser.add_argument('--stats_file', type=Path, default=Path('stats_train.npz'))
     parser.add_argument('--batch_size', type=int, default=32, help='batch size')
     parser.add_argument('--num_workers', type=int, default=4, help='number of workers for dataloader')

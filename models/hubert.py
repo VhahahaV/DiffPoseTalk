@@ -12,7 +12,17 @@ class HubertModel(HubertModel):
 
     def forward(self, input_values, output_fps=25, attention_mask=None, output_attentions=None,
                 output_hidden_states=None, return_dict=None, frame_num=None):
-        self.config.output_attentions = True
+        # Temporarily set attention implementation to 'eager' if needed
+        original_attn_impl = getattr(self.config, 'attn_implementation', None)
+        if hasattr(self.config, 'attn_implementation') and self.config.attn_implementation == 'sdpa':
+            self.config.attn_implementation = 'eager'
+
+        # Try to set output_attentions, but skip if it fails due to attn_implementation conflict
+        try:
+            self.config.output_attentions = True
+        except ValueError:
+            # If setting output_attentions fails due to attn_implementation, skip it
+            pass
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -46,6 +56,24 @@ class HubertModel(HubertModel):
 
         if not return_dict:
             return (hidden_states,) + encoder_outputs[1:]
+
+        # Restore original attention implementation
+        if original_attn_impl is not None:
+            self.config.attn_implementation = original_attn_impl
+
+        # Restore original attention implementation
+        if original_attn_impl is not None:
+            self.config.attn_implementation = original_attn_impl
+
+        # Restore original attention implementation
+        if original_attn_impl is not None:
+            self.config.attn_implementation = original_attn_impl
+
+        try:
+            self.config.output_attentions = False
+        except ValueError:
+            # If setting output_attentions fails, skip it
+            pass
 
         return BaseModelOutput(last_hidden_state=hidden_states, hidden_states=encoder_outputs.hidden_states,
                                attentions=encoder_outputs.attentions, )

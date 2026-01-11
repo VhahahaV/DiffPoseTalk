@@ -12,7 +12,7 @@ class StyleExtractor:
     def __init__(self, checkpoint_path, device='cuda'):
         self.device = device
 
-        model_data = torch.load(checkpoint_path, map_location=device)
+        model_data = torch.load(checkpoint_path, map_location=device, weights_only=False)
         self.model_args = model_data['args']
         self.model = StyleEncoder(self.model_args).to(device)
         self.model.encoder.load_state_dict(model_data['encoder'], strict=False)

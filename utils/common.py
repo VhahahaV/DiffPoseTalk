@@ -168,10 +168,10 @@ def compute_loss(args, is_starting_sample, shape_coef, motion_coef_gt, noise, ta
             seq_len = target.shape[1]
 
             if args.rot_repr == 'aa':
-                verts_gt, _, _ = flame(coef_gt['shape'].view(-1, 100), coef_gt['exp'].view(-1, 50),
+                verts_gt, _, _ = flame(coef_gt['shape'].reshape(-1, 100), coef_gt['exp'].reshape(-1, 50),
                                        coef_gt['pose'].view(-1, 6), return_lm2d=False, return_lm3d=False)
-                verts_pred, _, _ = flame(coef_pred['shape'].view(-1, 100), coef_pred['exp'].view(-1, 50),
-                                         coef_pred['pose'].view(-1, 6), return_lm2d=False, return_lm3d=False)
+                verts_pred, _, _ = flame(coef_pred['shape'].reshape(-1, 100), coef_pred['exp'].reshape(-1, 50),
+                                         coef_pred['pose'].reshape(-1, 6), return_lm2d=False, return_lm3d=False)
             else:
                 raise ValueError(f'Unknown rotation representation {args.rot_repr}!')
             verts_gt = verts_gt.view(-1, seq_len, 5023, 3)

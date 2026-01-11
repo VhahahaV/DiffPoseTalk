@@ -420,7 +420,7 @@ class DenoisingNetwork(nn.Module):
             self.person_feat_dim = self.shape_feat_dim + self.style_feat_dim
         else:
             self.person_feat_dim = self.shape_feat_dim
-        self.use_indicator = args.use_indicator
+        self.use_indicator = getattr(args, 'use_indicator', False)
 
         # Transformer
         self.architecture = args.architecture

@@ -8,9 +8,13 @@ class StyleEncoder(nn.Module):
         super().__init__()
 
         # Model parameters
-        self.motion_coef_dim = 50
+        # Fixed to 51-dim: 50 expr + 1 jaw (as per baseline_prompt.md requirements)
         if args.rot_repr == 'aa':
-            self.motion_coef_dim += 1 if args.no_head_pose else 4
+            if args.no_head_pose:
+                self.motion_coef_dim = 51  # 50 expr + 1 jaw
+            else:
+                # Legacy support: 50 expr + 4 pose (head pose + jaw)
+                self.motion_coef_dim = 54
         else:
             raise ValueError(f'Unknown rotation representation {args.rot_repr}!')
 

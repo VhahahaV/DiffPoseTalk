@@ -16,7 +16,11 @@ __dir__ = Path(__file__).parent
 sys.path.append(str(__dir__.parent.absolute()))
 
 # https://github.com/pytorch/audio/issues/2950 , https://github.com/pytorch/audio/issues/2356
-torchaudio.set_audio_backend('soundfile')
+# torchaudio.set_audio_backend is deprecated in newer versions
+try:
+    torchaudio.set_audio_backend('soundfile')
+except (AttributeError, RuntimeError):
+    pass  # Backend is set automatically in newer torchaudio versions
 
 warnings.filterwarnings('ignore', message='PySoundFile failed. Trying audioread instead.')
 

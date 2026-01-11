@@ -44,7 +44,7 @@ class Struct(object):
 
 __dir__ = Path(__file__).parent.absolute()
 FLAMEConfig = SimpleNamespace(
-    flame_model_path=str(__dir__ / 'data/FLAME2020/generic_model.pkl'),
+    flame_model_path=str(__dir__ / 'data/FLAME2020/FLAME2020/generic_model.pkl'),
     n_shape=100,
     n_exp=50,
     n_tex=50,

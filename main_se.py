@@ -2,6 +2,7 @@ import argparse
 from collections import deque
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import torch
@@ -12,7 +13,7 @@ from tqdm import tqdm
 
 import options.se as options
 import utils
-from data import LmdbDatasetForSE, infinite_data_loader
+from data import LmdbDatasetForSE, MotionJsonDatasetForSE, infinite_data_loader
 from models import StyleEncoder
 
 
@@ -54,7 +55,7 @@ def train(args, model: StyleEncoder, train_loader, val_loader, optimizer, save_d
 
         # Validation
         if (it % args.val_iter == 0 and it != 0) or it == args.max_iter:
-            test(args, model, val_loader, it, 200, 'val', writer)
+            test(args, model, val_loader, it, 10, 'val', writer)
 
         # save model
         if (it % args.save_iter == 0 and it != 0) or it == args.max_iter:
@@ -73,8 +74,14 @@ def test(args, model: StyleEncoder, test_loader, current_iter, n_rounds=10, mode
     model.encoder.eval()
 
     loss_log = []
-    for test_round in range(n_rounds):
+    try:
+        # Limit validation to avoid hanging: only iterate once through the dataset
+        # n_rounds is ignored for validation to prevent excessive computation
+        max_batches = min(len(test_loader), 100)  # Limit to 100 batches max
+        batch_count = 0
         for coef_pair in test_loader:
+            if batch_count >= max_batches:
+                break
             # Load data
             coef_pair = [coef.to(device) for coef in coef_pair]
 
@@ -85,13 +92,23 @@ def test(args, model: StyleEncoder, test_loader, current_iter, n_rounds=10, mode
 
             # Logging
             loss_log.append(loss.item())
+            batch_count += 1
 
-    description = f'(Iter {current_iter:>6}) {mode} loss: [{np.mean(loss_log):.3e}]'
+        if len(loss_log) == 0:
+            print(f'(Iter {current_iter:>6}) {mode} loss: [N/A - no data]')
+            return
+
+        description = f'(Iter {current_iter:>6}) {mode} loss: [{np.mean(loss_log):.3e}] (batches: {len(loss_log)})'
     print(description)
 
     if writer is not None:
         # write to tensorboard
         writer.add_scalar(f'{mode}/loss', np.mean(loss_log), current_iter)
+
+    except Exception as e:
+        print(f'(Iter {current_iter:>6}) {mode} error: {e}')
+        import traceback
+        traceback.print_exc()
 
     if is_training:
         model.encoder.train()
@@ -100,27 +117,54 @@ def test(args, model: StyleEncoder, test_loader, current_iter, n_rounds=10, mode
 def main(args, option_text=None):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # Load data
-    data_root = Path(args.data_root)
-    coef_stats_file: Path = args.stats_file
-    if not coef_stats_file.is_absolute():
-        coef_stats_file = data_root / coef_stats_file
+    # Enforce no_head_pose=True for 51-dim motion (50 expr + 1 jaw)
+    args.no_head_pose = True
+
+    # Determine data loading mode
+    use_json_datasets = args.data_jsons is not None and len(args.data_jsons) > 0
 
     if args.mode == 'train':
         # Build model
         model = StyleEncoder(args).to(device)
 
         # Dataset
-        train_dataset = LmdbDatasetForSE(data_root, args.data_root / 'train.txt', coef_stats_file, args.fps,
+        if use_json_datasets:
+            # New multi-dataset JSON-based loading
+            data_roots = [Path(r) for r in args.data_roots] if args.data_roots else [Path('.')]
+            coef_stats_file: Optional[Path] = args.stats_file
+            if coef_stats_file is not None and not coef_stats_file.is_absolute():
+                coef_stats_file = data_roots[0] / coef_stats_file
+
+            train_dataset = MotionJsonDatasetForSE(
+                data_roots, args.data_jsons, n_motions=args.n_motions,
+                crop_strategy='random', target_fps=args.fps, stats_file=coef_stats_file,
+                rot_repr=args.rot_repr, no_head_pose=args.no_head_pose
+            )
+            val_jsons = args.val_jsons if args.val_jsons is not None else args.data_jsons
+            val_dataset = MotionJsonDatasetForSE(
+                data_roots, val_jsons, n_motions=args.n_motions,
+                crop_strategy='begin', target_fps=args.fps, stats_file=coef_stats_file,
+                rot_repr=args.rot_repr, no_head_pose=args.no_head_pose
+            )
+        else:
+            # Legacy LMDB loading
+            data_root = Path(args.data_root) if args.data_root else Path('datasets/HDTF_TFHP/lmdb')
+            coef_stats_file: Path = args.stats_file
+            if not coef_stats_file.is_absolute():
+                coef_stats_file = data_root / coef_stats_file
+
+            train_dataset = LmdbDatasetForSE(data_root, data_root / 'train.txt', coef_stats_file, args.fps,
                                          args.n_motions,
                                          rot_repr=args.rot_repr, no_head_pose=args.no_head_pose)
-        val_dataset = LmdbDatasetForSE(data_root, args.data_root / 'val.txt', coef_stats_file, args.fps, args.n_motions,
+            val_dataset = LmdbDatasetForSE(data_root, data_root / 'val.txt', coef_stats_file, args.fps, args.n_motions,
                                        rot_repr=args.rot_repr, no_head_pose=args.no_head_pose)
+
         train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
                                        num_workers=args.num_workers, pin_memory=True, drop_last=True,
                                        persistent_workers=True)
-        val_loader = data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=True,
-                                     num_workers=args.num_workers, drop_last=True)
+        # Use num_workers=0 for val_loader to avoid multiprocessing issues that can cause hangs
+        val_loader = data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
+                                     num_workers=0, drop_last=False)
 
         # Logging
         exp_dir = Path('experiments/SE') / f'{args.exp_name}-{datetime.now().strftime("%y%m%d_%H%M%S")}'
@@ -141,14 +185,30 @@ def main(args, option_text=None):
     else:
         # Build model
         checkpoint_path, _ = utils.get_model_path(args.exp_name, args.iter, 'SE')
-        model_data = torch.load(checkpoint_path, map_location=device)
+        model_data = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model_args = model_data['args']
         model = StyleEncoder(model_args).to(device)
         model.encoder.load_state_dict(model_data['encoder'], strict=False)
         model.eval()
 
         # Dataset
-        test_dataset = LmdbDatasetForSE(data_root, args.data_root / 'test.txt', coef_stats_file, args.fps,
+        use_json_datasets = args.data_jsons is not None and len(args.data_jsons) > 0
+        if use_json_datasets:
+            data_roots = [Path(r) for r in args.data_roots] if args.data_roots else [Path('.')]
+            coef_stats_file: Optional[Path] = args.stats_file
+            if coef_stats_file is not None and not coef_stats_file.is_absolute():
+                coef_stats_file = data_roots[0] / coef_stats_file
+            test_dataset = MotionJsonDatasetForSE(
+                data_roots, args.data_jsons, n_motions=args.n_motions,
+                crop_strategy='begin', target_fps=args.fps, stats_file=coef_stats_file,
+                rot_repr=args.rot_repr, no_head_pose=args.no_head_pose
+            )
+        else:
+            data_root = Path(args.data_root) if args.data_root else Path('datasets/HDTF_TFHP/lmdb')
+            coef_stats_file: Path = args.stats_file
+            if not coef_stats_file.is_absolute():
+                coef_stats_file = data_root / coef_stats_file
+            test_dataset = LmdbDatasetForSE(data_root, data_root / 'test.txt', coef_stats_file, args.fps,
                                         args.n_motions,
                                         rot_repr=args.rot_repr, no_head_pose=args.no_head_pose)
         test_loader = data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=True,

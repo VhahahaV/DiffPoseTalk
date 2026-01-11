@@ -31,7 +31,7 @@ class Demo:
         model_path, exp_name = self._get_model_path(args.exp_name, args.iter)
         self.exp_name = exp_name
         self.iter = args.iter
-        model_data = torch.load(model_path, map_location=self.device)
+        model_data = torch.load(model_path, map_location=self.device, weights_only=False)
         self.model_args = NullableArgs(model_data['args'])
         self.model = DiffTalkingHead(self.model_args, self.device)
         model_data['model'].pop('denoising_net.TE.pe')

@@ -34,11 +34,18 @@ def add_model_options(parser: argparse.ArgumentParser):
 
 
 def add_data_options(parser: argparse.ArgumentParser):
-    parser.add_argument('--data_root', type=Path, default=Path('datasets/HDTF_TFHP/lmdb'),
-                        help='dataset path')
-    parser.add_argument('--stats_file', type=Path, default=Path('stats_train.npz'))
+    parser.add_argument('--data_roots', nargs='+', type=Path, default=[],
+                        help='List of dataset roots. All JSON and metadata paths are resolved against them.')
+    parser.add_argument('--data_jsons', nargs='+', type=str, default=[],
+                        help='JSON index files relative to data roots (train or test split).')
+    parser.add_argument('--val_jsons', nargs='+', type=str, default=None,
+                        help='Optional JSON index files for validation split; falls back to data_jsons if omitted.')
+    parser.add_argument('--stats_file', type=Path, default=None)
     parser.add_argument('--batch_size', type=int, default=16, help='batch size')
     parser.add_argument('--num_workers', type=int, default=4, help='number of workers for dataloader')
+    parser.add_argument('--output_dir', type=Path, default=Path('results/metrics'),
+                        help='Directory to store inference outputs.')
+    parser.add_argument('--n_repetitions', type=int, default=1, help='Number of samples to generate per input.')
 
 
 def add_training_options(parser: argparse.ArgumentParser):
