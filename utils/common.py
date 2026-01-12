@@ -21,6 +21,8 @@ class NullableArgs:
             return not self.predict_head_pose
         if key == 'no_use_learnable_pe':
             return not self.use_learnable_pe
+        if key == 'use_neck_pose':
+            return False
 
         return None
 
@@ -59,30 +61,54 @@ def get_pose_input(coef_dict, rot_repr, with_global_pose):
     return pose_input
 
 
-def get_motion_coef(coef_dict, rot_repr, with_global_pose=False, norm_stats=None):
+def get_motion_coef(coef_dict, rot_repr, with_global_pose=False, norm_stats=None, use_neck_pose=False):
     if norm_stats is not None:
         if rot_repr == 'aa':
             keys = ['exp', 'pose']
         else:
             raise ValueError(f'Unknown rotation representation {rot_repr}!')
 
-        coef_dict = {k: (coef_dict[k] - norm_stats[f'{k}_mean']) / norm_stats[f'{k}_std'] for k in keys}
+        for k in keys:
+            coef_dict[k] = (coef_dict[k] - norm_stats[f'{k}_mean']) / norm_stats[f'{k}_std']
+        if use_neck_pose and 'neck' in coef_dict:
+            mean_key = 'neck_mean'
+            std_key = 'neck_std'
+            if mean_key in norm_stats and std_key in norm_stats:
+                coef_dict['neck'] = (coef_dict['neck'] - norm_stats[mean_key]) / norm_stats[std_key]
     pose_coef = get_pose_input(coef_dict, rot_repr, with_global_pose)
-    return torch.cat([coef_dict['exp'], pose_coef], dim=-1)
+    motion_parts = [coef_dict['exp'], pose_coef]
+    if use_neck_pose:
+        neck = coef_dict.get('neck')
+        if neck is None:
+            neck = torch.zeros((*coef_dict['exp'].shape[:-1], 3), device=coef_dict['exp'].device,
+                               dtype=coef_dict['exp'].dtype)
+        motion_parts.append(neck)
+    return torch.cat(motion_parts, dim=-1)
 
 
-def get_coef_dict(motion_coef, shape_coef=None, denorm_stats=None, with_global_pose=False, rot_repr='aa'):
+def get_coef_dict(motion_coef, shape_coef=None, denorm_stats=None, with_global_pose=False, rot_repr='aa',
+                  use_neck_pose=False):
     coef_dict = {
         'exp': motion_coef[..., :50]
     }
     if rot_repr == 'aa':
+        pose_dim = 4 if with_global_pose else 1
+        pose_start = 50
+        pose_end = pose_start + pose_dim
+        pose_slice = motion_coef[..., pose_start:pose_end]
+        neck_slice = None
+        if use_neck_pose:
+            neck_slice = motion_coef[..., pose_end:pose_end + 3]
+
         if with_global_pose:
-            coef_dict['pose'] = motion_coef[..., 50:]
+            coef_dict['pose'] = pose_slice
         else:
             placeholder = torch.zeros_like(motion_coef[..., :3])
-            coef_dict['pose'] = torch.cat([placeholder, motion_coef[..., -1:]], dim=-1)
+            coef_dict['pose'] = torch.cat([placeholder, pose_slice], dim=-1)
         # Add back rotation around y, z axis
         coef_dict['pose'] = torch.cat([coef_dict['pose'], torch.zeros_like(motion_coef[..., :2])], dim=-1)
+        if use_neck_pose:
+            coef_dict['neck'] = neck_slice
     else:
         raise ValueError(f'Unknown rotation representation {rot_repr}!')
 
@@ -96,7 +122,15 @@ def get_coef_dict(motion_coef, shape_coef=None, denorm_stats=None, with_global_p
         coef_dict['shape'] = shape_coef
 
     if denorm_stats is not None:
-        coef_dict = {k: coef_dict[k] * denorm_stats[f'{k}_std'] + denorm_stats[f'{k}_mean'] for k in coef_dict}
+        denormed = {}
+        for k, v in coef_dict.items():
+            mean_key = f'{k}_mean'
+            std_key = f'{k}_std'
+            if mean_key in denorm_stats and std_key in denorm_stats:
+                denormed[k] = v * denorm_stats[std_key] + denorm_stats[mean_key]
+            else:
+                denormed[k] = v
+        coef_dict = denormed
 
     if not with_global_pose:
         if rot_repr == 'aa':
@@ -110,6 +144,7 @@ def get_coef_dict(motion_coef, shape_coef=None, denorm_stats=None, with_global_p
 def coef_dict_to_vertices(coef_dict, flame, rot_repr='aa', ignore_global_rot=False, flame_batch_size=512):
     shape = coef_dict['exp'].shape[:-1]
     coef_dict = {k: v.view(-1, v.shape[-1]) for k, v in coef_dict.items()}
+    neck_pose = coef_dict.get('neck')
     n_samples = reduce(lambda x, y: x * y, shape, 1)
 
     # Convert to vertices
@@ -119,6 +154,7 @@ def coef_dict_to_vertices(coef_dict, flame, rot_repr='aa', ignore_global_rot=Fal
         if rot_repr == 'aa':
             vert, _, _ = flame(
                 batch_coef_dict['shape'], batch_coef_dict['exp'], batch_coef_dict['pose'],
+                neck_pose_params=neck_pose[i:i + flame_batch_size] if neck_pose is not None else None,
                 pose2rot=True, ignore_global_rot=ignore_global_rot, return_lm2d=False, return_lm3d=False)
         else:
             raise ValueError(f'Unknown rot_repr: {rot_repr}')
@@ -161,17 +197,20 @@ def compute_loss(args, is_starting_sample, shape_coef, motion_coef_gt, noise, ta
         loss_noise = criterion_func(motion_coef_gt, target, reduction='none')
 
         if args.l_vert > 0 or args.l_vel > 0:
+            # Exclude neck pose from FLAME-based losses; neck is supervised via reconstruction loss.
             coef_gt = get_coef_dict(motion_coef_gt, shape_coef, coef_stats, with_global_pose=False,
-                                    rot_repr=args.rot_repr)
+                                    rot_repr=args.rot_repr, use_neck_pose=False)
             coef_pred = get_coef_dict(target, shape_coef, coef_stats, with_global_pose=False,
-                                      rot_repr=args.rot_repr)
+                                      rot_repr=args.rot_repr, use_neck_pose=False)
             seq_len = target.shape[1]
 
             if args.rot_repr == 'aa':
                 verts_gt, _, _ = flame(coef_gt['shape'].reshape(-1, 100), coef_gt['exp'].reshape(-1, 50),
-                                       coef_gt['pose'].view(-1, 6), return_lm2d=False, return_lm3d=False)
+                                       coef_gt['pose'].view(-1, 6),
+                                       return_lm2d=False, return_lm3d=False)
                 verts_pred, _, _ = flame(coef_pred['shape'].reshape(-1, 100), coef_pred['exp'].reshape(-1, 50),
-                                         coef_pred['pose'].reshape(-1, 6), return_lm2d=False, return_lm3d=False)
+                                         coef_pred['pose'].reshape(-1, 6),
+                                         return_lm2d=False, return_lm3d=False)
             else:
                 raise ValueError(f'Unknown rotation representation {args.rot_repr}!')
             verts_gt = verts_gt.view(-1, seq_len, 5023, 3)

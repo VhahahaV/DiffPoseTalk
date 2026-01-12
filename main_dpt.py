@@ -97,8 +97,9 @@ def train(args, model: DiffTalkingHead, style_enc: Optional[StyleEncoder], train
         audio_pair = [audio.to(device) for audio in audio_pair]
         coef_pair = [{x: coef_pair[i][x].to(device) for x in coef_pair[i]} for i in range(2)]
         motion_coef_pair = [
-            utils.get_motion_coef(coef_pair[i], args.rot_repr, predict_head_pose) for i in range(2)
-        ]  # (N, L, 51) when no_head_pose=True
+            utils.get_motion_coef(coef_pair[i], args.rot_repr, predict_head_pose,
+                                  use_neck_pose=getattr(args, 'use_neck_pose', False)) for i in range(2)
+        ]
 
         # Verify motion_coef dimensions match style encoder expectations
         if style_enc is not None:
@@ -135,7 +136,7 @@ def train(args, model: DiffTalkingHead, style_enc: Optional[StyleEncoder], train
         loss_head_trans = 0
         for i in range(2):
             audio = audio_pair[i]  # (N, L_a)
-            motion_coef = motion_coef_pair[i]  # (N, L, 51) when no_head_pose=True
+            motion_coef = motion_coef_pair[i]
             style = style_pair[1 - i] if style_enc is not None else None
             batch_size = audio.shape[0]
 
@@ -306,8 +307,9 @@ def test(args, model: DiffTalkingHead, style_enc: Optional[StyleEncoder], test_l
             audio_pair = [audio.to(device) for audio in audio_pair]
             coef_pair = [{x: coef_pair[i][x].to(device) for x in coef_pair[i]} for i in range(2)]
             motion_coef_pair = [
-                utils.get_motion_coef(coef_pair[i], args.rot_repr, predict_head_pose) for i in range(2)
-            ]  # (N, L, 51) when no_head_pose=True
+                utils.get_motion_coef(coef_pair[i], args.rot_repr, predict_head_pose,
+                                      use_neck_pose=getattr(args, 'use_neck_pose', False)) for i in range(2)
+            ]
 
             # Verify motion_coef dimensions match style encoder expectations
             if style_enc is not None:
@@ -344,7 +346,7 @@ def test(args, model: DiffTalkingHead, style_enc: Optional[StyleEncoder], test_l
             loss_head_trans = 0
             for i in range(2):
                 audio = audio_pair[i]  # (N, L_a)
-                motion_coef = motion_coef_pair[i]  # (N, L, 51) when no_head_pose=True
+                motion_coef = motion_coef_pair[i]
                 style = style_pair[1 - i] if style_enc is not None else None
                 batch_size = audio.shape[0]
 
@@ -522,7 +524,8 @@ def generate_motion_sequence(args, model: DiffTalkingHead, sample: dict, coef_st
     if coef_stats is not None:
         coef_stats = {k: v.to(device) for k, v in coef_stats.items()}
     coef_dict = utils.get_coef_dict(
-        motion_seq, shape_batch, coef_stats, with_global_pose=False, rot_repr=args.rot_repr)
+        motion_seq, shape_batch, coef_stats, with_global_pose=False, rot_repr=args.rot_repr,
+        use_neck_pose=getattr(args, 'use_neck_pose', False))
     return motion_seq, coef_dict
 
 
@@ -601,7 +604,7 @@ def count_parameters(model):
 def main(args, option_text=None):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # Enforce 51-dim motion (50 expr + 1 jaw)
+    # Enforce jaw-only head pose; optionally include neck pose
     args.no_head_pose = True
     args.l_head_angle = 0
     args.l_head_vel = 0
@@ -663,12 +666,12 @@ def main(args, option_text=None):
         train_dataset = MotionJsonDataset(
             data_roots, args.data_jsons, n_motions=args.n_motions, crop_strategy='random',
             target_fps=args.fps, stats_file=coef_stats_file, split='train', rot_repr=args.rot_repr,
-            pad_mode=args.pad_mode)
+            pad_mode=args.pad_mode, use_neck_pose=getattr(args, 'use_neck_pose', False))
         val_jsons = args.val_jsons if args.val_jsons is not None else args.data_jsons
         val_dataset = MotionJsonDataset(
             data_roots, val_jsons, n_motions=args.n_motions, crop_strategy='begin',
             target_fps=args.fps, stats_file=coef_stats_file, split='val', rot_repr=args.rot_repr,
-            pad_mode=args.pad_mode)
+            pad_mode=args.pad_mode, use_neck_pose=getattr(args, 'use_neck_pose', False))
         train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
                                        num_workers=args.num_workers, pin_memory=True)
         val_loader = data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
@@ -709,6 +712,7 @@ def main(args, option_text=None):
         model_data = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model_args = utils.NullableArgs(model_data['args'])
         model_args.no_head_pose = True
+        model_args.use_neck_pose = getattr(model_args, 'use_neck_pose', False)
         # Allow overriding style encoder checkpoint via CLI
         override_style_ckpt = getattr(args, 'style_enc_ckpt', None)
         if override_style_ckpt:
@@ -750,13 +754,15 @@ def main(args, option_text=None):
         infer_args.use_indicator = getattr(model_args, 'use_indicator', False)
         infer_args.pad_mode = getattr(model_args, 'pad_mode', 'zero') or 'zero'
         infer_args.no_head_pose = True
+        infer_args.use_neck_pose = getattr(model_args, 'use_neck_pose', False)
 
         coef_stats = None
         if coef_stats_file is not None and coef_stats_file.exists():
             stats_np = dict(np.load(coef_stats_file))
             coef_stats = {k: torch.tensor(v, dtype=torch.float32) for k, v in stats_np.items()}
 
-        infer_dataset = MotionInferenceDataset(data_roots, args.data_jsons, target_fps=infer_args.fps)
+        infer_dataset = MotionInferenceDataset(data_roots, args.data_jsons, target_fps=infer_args.fps,
+                                               use_neck_pose=infer_args.use_neck_pose)
         run_inference(infer_args, model, flame, infer_dataset, coef_stats, style_enc)
 
 

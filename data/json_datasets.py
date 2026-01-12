@@ -94,6 +94,24 @@ def _load_stats(stats_file: Optional[Path]) -> Optional[Dict[str, torch.Tensor]]
     return {k: torch.tensor(v, dtype=torch.float32) for k, v in coef_stats.items()}
 
 
+def _entry_has_neck_pose(meta: Dict[str, Any], root: Path) -> bool:
+    flame_rel = meta.get('flame_coeff_save_path') or meta.get('flame_path') or meta.get('flame_coeff_path')
+    if flame_rel is None:
+        return False
+    flame_rel_stripped = _strip_dataset_prefix(flame_rel, root)
+    flame_path = root / flame_rel_stripped
+    if not flame_path.exists():
+        return True
+    try:
+        with np.load(flame_path, allow_pickle=True) as data:
+            keys = set(data.files)
+    except Exception:
+        return True
+    if 'expcode' in keys:
+        return False
+    return 'neck_pose' in keys or 'neck' in keys
+
+
 class MotionJsonDataset(data.Dataset):
     """Dataset that reads multiple JSON index files and crops two clips."""
 
@@ -107,7 +125,8 @@ class MotionJsonDataset(data.Dataset):
             stats_file: Optional[Path] = None,
             split: str = 'train',
             rot_repr: str = 'aa',
-            pad_mode: str = 'zero'):
+            pad_mode: str = 'zero',
+            use_neck_pose: bool = False):
         super().__init__()
         self.data_roots = [Path(r) for r in data_roots]
         if len(self.data_roots) == 0:
@@ -118,6 +137,7 @@ class MotionJsonDataset(data.Dataset):
         self.target_fps = target_fps
         self.rot_representation = rot_repr
         self.pad_mode = pad_mode
+        self.use_neck_pose = use_neck_pose
 
         self.coef_fps = target_fps
         self.audio_unit = 16000. / self.coef_fps
@@ -159,6 +179,7 @@ class MotionJsonDataset(data.Dataset):
 
     def _load_entries(self) -> List[Dict[str, Any]]:
         entries = []
+        skipped_no_neck = 0
         for json_rel in self.data_jsons:
             json_path = self._resolve_json_path(json_rel)
             with open(json_path, 'r') as f:
@@ -166,6 +187,9 @@ class MotionJsonDataset(data.Dataset):
             for sample_id, meta in content.items():
                 dataset_name = self._select_dataset_name(meta, json_path)
                 root = self._resolve_sample_root(meta, json_path)
+                if self.use_neck_pose and not _entry_has_neck_pose(meta, root):
+                    skipped_no_neck += 1
+                    continue
                 entries.append({
                     'json_path': json_path,
                     'sample_id': sample_id,
@@ -175,6 +199,8 @@ class MotionJsonDataset(data.Dataset):
                 })
         if len(entries) == 0:
             raise RuntimeError('No samples found in provided json files.')
+        if skipped_no_neck > 0:
+            print(f'Warning: skipped {skipped_no_neck} samples without neck_pose for motion dataset.')
         return entries
 
     def __len__(self):
@@ -198,7 +224,7 @@ class MotionJsonDataset(data.Dataset):
         if self.coef_stats is None:
             return coef_dict
         out = {}
-        for key in ['exp', 'pose', 'shape']:
+        for key in ['exp', 'pose', 'shape', 'neck']:
             if key not in coef_dict:
                 continue
             mean_key = f'{key}_mean'
@@ -229,6 +255,7 @@ class MotionJsonDataset(data.Dataset):
         coef_np = load_flame_coefficients(flame_path, dataset_name, self.target_fps)
         exp = coef_np['exp']
         pose = coef_np['pose']
+        neck = coef_np['neck']
         shape_vec = coef_np['shape']
 
         seq_len = exp.shape[0]
@@ -236,6 +263,7 @@ class MotionJsonDataset(data.Dataset):
             pad_len = self.coef_total_len - seq_len
             exp = np.pad(exp, ((0, pad_len), (0, 0)), mode='edge')
             pose = np.pad(pose, ((0, pad_len), (0, 0)), mode='edge')
+            neck = np.pad(neck, ((0, pad_len), (0, 0)), mode='edge')
             seq_len = exp.shape[0]
 
         if self.crop_strategy == 'random':
@@ -250,12 +278,15 @@ class MotionJsonDataset(data.Dataset):
         end_frame = start_frame + self.coef_total_len
         exp_clip = torch.tensor(exp[start_frame:end_frame], dtype=torch.float32)
         pose_clip = torch.tensor(pose[start_frame:end_frame], dtype=torch.float32)
+        neck_clip = torch.tensor(neck[start_frame:end_frame], dtype=torch.float32)
         shape_clip = torch.tensor(
             np.broadcast_to(shape_vec[None, :], (self.coef_total_len, shape_vec.shape[0])),
             dtype=torch.float32
         )
 
         coef_clip = {'exp': exp_clip, 'pose': pose_clip, 'shape': shape_clip}
+        if self.use_neck_pose:
+            coef_clip['neck'] = neck_clip
         coef_clip = self._apply_coef_stats(coef_clip)
 
         audio_rel = meta.get('audio_path') or meta.get('audio')
@@ -294,13 +325,15 @@ class MotionJsonDataset(data.Dataset):
 class MotionInferenceDataset(data.Dataset):
     """Dataset for full-sequence inference outputs."""
 
-    def __init__(self, data_roots: List[Path], data_jsons: List[str], target_fps: int = TARGET_FPS):
+    def __init__(self, data_roots: List[Path], data_jsons: List[str], target_fps: int = TARGET_FPS,
+                 use_neck_pose: bool = False):
         super().__init__()
         self.data_roots = [Path(r) for r in data_roots]
         if len(self.data_roots) == 0:
             raise ValueError('data_roots cannot be empty')
         self.data_jsons = data_jsons
         self.target_fps = target_fps
+        self.use_neck_pose = use_neck_pose
         self.entries = self._load_entries()
         self.audio_unit = 16000. / self.target_fps
 
@@ -374,10 +407,14 @@ class MotionInferenceDataset(data.Dataset):
         coef_np = load_flame_coefficients(flame_path, dataset_name, self.target_fps)
         exp = torch.tensor(coef_np['exp'], dtype=torch.float32)
         jaw = torch.tensor(coef_np['jaw'], dtype=torch.float32)
+        neck = torch.tensor(coef_np['neck'], dtype=torch.float32)
         pose = torch.tensor(coef_np['pose'], dtype=torch.float32)
         shape_vec = torch.tensor(coef_np['shape'], dtype=torch.float32)
 
-        motion = torch.cat([exp, jaw], dim=-1)
+        if self.use_neck_pose:
+            motion = torch.cat([exp, jaw, neck], dim=-1)
+        else:
+            motion = torch.cat([exp, jaw], dim=-1)
         seq_len = motion.shape[0]
 
         audio_rel = meta.get('audio_path') or meta.get('audio')
@@ -405,6 +442,7 @@ class MotionInferenceDataset(data.Dataset):
             'audio_std': float(audio_std),
             'motion': motion,
             'pose': pose,
+            'neck': neck,
             'shape': shape_vec,
             'seq_len': seq_len,
             'dataset_name': dataset_name,
@@ -415,7 +453,7 @@ class MotionInferenceDataset(data.Dataset):
 
 
 class MotionJsonDatasetForSE(data.Dataset):
-    """Dataset for Style Encoder training: returns two consecutive motion clips (51-dim: 50 expr + 1 jaw)."""
+    """Dataset for Style Encoder training: returns two consecutive motion clips."""
 
     def __init__(
             self,
@@ -426,7 +464,8 @@ class MotionJsonDatasetForSE(data.Dataset):
             target_fps: int = TARGET_FPS,
             stats_file: Optional[Path] = None,
             rot_repr: str = 'aa',
-            no_head_pose: bool = True):
+            no_head_pose: bool = True,
+            use_neck_pose: bool = False):
         super().__init__()
         self.data_roots = [Path(r) for r in data_roots]
         if len(self.data_roots) == 0:
@@ -437,6 +476,7 @@ class MotionJsonDatasetForSE(data.Dataset):
         self.target_fps = target_fps
         self.rot_representation = rot_repr
         self.no_head_pose = no_head_pose
+        self.use_neck_pose = use_neck_pose
 
         self.coef_fps = target_fps
         # Total length for two consecutive clips (with some overlap)
@@ -476,6 +516,7 @@ class MotionJsonDatasetForSE(data.Dataset):
 
     def _load_entries(self) -> List[Dict[str, Any]]:
         entries = []
+        skipped_no_neck = 0
         for json_rel in self.data_jsons:
             json_path = self._resolve_json_path(json_rel)
             with open(json_path, 'r') as f:
@@ -483,6 +524,9 @@ class MotionJsonDatasetForSE(data.Dataset):
             for sample_id, meta in content.items():
                 dataset_name = self._select_dataset_name(meta, json_path)
                 root = self._resolve_sample_root(meta, json_path)
+                if self.use_neck_pose and not _entry_has_neck_pose(meta, root):
+                    skipped_no_neck += 1
+                    continue
                 entries.append({
                     'json_path': json_path,
                     'sample_id': sample_id,
@@ -492,6 +536,8 @@ class MotionJsonDatasetForSE(data.Dataset):
                 })
         if len(entries) == 0:
             raise RuntimeError('No samples found in provided json files.')
+        if skipped_no_neck > 0:
+            print(f'Warning: skipped {skipped_no_neck} samples without neck_pose for style encoder dataset.')
         return entries
 
     def __len__(self):
@@ -530,6 +576,14 @@ class MotionJsonDatasetForSE(data.Dataset):
             else:
                 out['jaw'] = coef_dict['jaw']
         
+        if 'neck' in coef_dict:
+            if 'neck_mean' in self.coef_stats and 'neck_std' in self.coef_stats:
+                mean = self.coef_stats['neck_mean'].to(coef_dict['neck'].device)
+                std = self.coef_stats['neck_std'].to(coef_dict['neck'].device)
+                out['neck'] = (coef_dict['neck'] - mean) / (std + 1e-9)
+            else:
+                out['neck'] = coef_dict['neck']
+
         return out
 
     def __getitem__(self, index):
@@ -550,12 +604,14 @@ class MotionJsonDatasetForSE(data.Dataset):
         coef_np = load_flame_coefficients(flame_path, dataset_name, self.target_fps)
         exp = coef_np['exp']
         jaw = coef_np['jaw']
+        neck = coef_np['neck']
 
         seq_len = exp.shape[0]
         if seq_len < self.coef_total_len:
             pad_len = self.coef_total_len - seq_len
             exp = np.pad(exp, ((0, pad_len), (0, 0)), mode='edge')
             jaw = np.pad(jaw, ((0, pad_len), (0, 0)), mode='edge')
+            neck = np.pad(neck, ((0, pad_len), (0, 0)), mode='edge')
             seq_len = exp.shape[0]
 
         if self.crop_strategy == 'random':
@@ -570,12 +626,17 @@ class MotionJsonDatasetForSE(data.Dataset):
         end_frame = start_frame + self.coef_total_len
         exp_clip = torch.tensor(exp[start_frame:end_frame], dtype=torch.float32)
         jaw_clip = torch.tensor(jaw[start_frame:end_frame], dtype=torch.float32)
+        neck_clip = torch.tensor(neck[start_frame:end_frame], dtype=torch.float32)
 
         coef_clip = {'exp': exp_clip, 'jaw': jaw_clip}
+        if self.use_neck_pose:
+            coef_clip['neck'] = neck_clip
         coef_clip = self._apply_coef_stats(coef_clip)
 
-        # Extract two consecutive motion clips (51-dim: 50 expr + 1 jaw)
-        motion_coef = torch.cat([coef_clip['exp'], coef_clip['jaw']], dim=-1)  # (total_len, 51)
+        if self.use_neck_pose:
+            motion_coef = torch.cat([coef_clip['exp'], coef_clip['jaw'], coef_clip['neck']], dim=-1)
+        else:
+            motion_coef = torch.cat([coef_clip['exp'], coef_clip['jaw']], dim=-1)
         
         # Extract two consecutive clips
         coef_pair = [

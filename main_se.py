@@ -117,7 +117,7 @@ def test(args, model: StyleEncoder, test_loader, current_iter, n_rounds=10, mode
 def main(args, option_text=None):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # Enforce no_head_pose=True for 51-dim motion (50 expr + 1 jaw)
+    # Enforce jaw-only head pose; optionally include neck pose
     args.no_head_pose = True
 
     # Determine data loading mode
@@ -138,13 +138,15 @@ def main(args, option_text=None):
             train_dataset = MotionJsonDatasetForSE(
                 data_roots, args.data_jsons, n_motions=args.n_motions,
                 crop_strategy='random', target_fps=args.fps, stats_file=coef_stats_file,
-                rot_repr=args.rot_repr, no_head_pose=args.no_head_pose
+                rot_repr=args.rot_repr, no_head_pose=args.no_head_pose,
+                use_neck_pose=getattr(args, 'use_neck_pose', False)
             )
             val_jsons = args.val_jsons if args.val_jsons is not None else args.data_jsons
             val_dataset = MotionJsonDatasetForSE(
                 data_roots, val_jsons, n_motions=args.n_motions,
                 crop_strategy='begin', target_fps=args.fps, stats_file=coef_stats_file,
-                rot_repr=args.rot_repr, no_head_pose=args.no_head_pose
+                rot_repr=args.rot_repr, no_head_pose=args.no_head_pose,
+                use_neck_pose=getattr(args, 'use_neck_pose', False)
             )
         else:
             # Legacy LMDB loading
@@ -155,9 +157,11 @@ def main(args, option_text=None):
 
             train_dataset = LmdbDatasetForSE(data_root, data_root / 'train.txt', coef_stats_file, args.fps,
                                          args.n_motions,
-                                         rot_repr=args.rot_repr, no_head_pose=args.no_head_pose)
+                                         rot_repr=args.rot_repr, no_head_pose=args.no_head_pose,
+                                         use_neck_pose=getattr(args, 'use_neck_pose', False))
             val_dataset = LmdbDatasetForSE(data_root, data_root / 'val.txt', coef_stats_file, args.fps, args.n_motions,
-                                       rot_repr=args.rot_repr, no_head_pose=args.no_head_pose)
+                                       rot_repr=args.rot_repr, no_head_pose=args.no_head_pose,
+                                       use_neck_pose=getattr(args, 'use_neck_pose', False))
 
         train_loader = data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
                                        num_workers=args.num_workers, pin_memory=True, drop_last=True,
@@ -190,6 +194,7 @@ def main(args, option_text=None):
         model = StyleEncoder(model_args).to(device)
         model.encoder.load_state_dict(model_data['encoder'], strict=False)
         model.eval()
+        args.use_neck_pose = getattr(model_args, 'use_neck_pose', False)
 
         # Dataset
         use_json_datasets = args.data_jsons is not None and len(args.data_jsons) > 0
@@ -201,7 +206,8 @@ def main(args, option_text=None):
             test_dataset = MotionJsonDatasetForSE(
                 data_roots, args.data_jsons, n_motions=args.n_motions,
                 crop_strategy='begin', target_fps=args.fps, stats_file=coef_stats_file,
-                rot_repr=args.rot_repr, no_head_pose=args.no_head_pose
+                rot_repr=args.rot_repr, no_head_pose=args.no_head_pose,
+                use_neck_pose=getattr(args, 'use_neck_pose', False)
             )
         else:
             data_root = Path(args.data_root) if args.data_root else Path('datasets/HDTF_TFHP/lmdb')
@@ -210,7 +216,8 @@ def main(args, option_text=None):
                 coef_stats_file = data_root / coef_stats_file
             test_dataset = LmdbDatasetForSE(data_root, data_root / 'test.txt', coef_stats_file, args.fps,
                                         args.n_motions,
-                                        rot_repr=args.rot_repr, no_head_pose=args.no_head_pose)
+                                        rot_repr=args.rot_repr, no_head_pose=args.no_head_pose,
+                                        use_neck_pose=getattr(args, 'use_neck_pose', False))
         test_loader = data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=True,
                                       num_workers=args.num_workers)
 

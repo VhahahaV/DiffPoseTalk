@@ -31,13 +31,21 @@ class StyleExtractor:
         self.audio_unit = 16000 / self.model_args.fps
         self.rot_repr = self.model_args.rot_repr
         self.no_head_pose = self.model_args.no_head_pose
+        self.use_neck_pose = getattr(self.model_args, 'use_neck_pose', False)
 
     @torch.no_grad()
     def extract(self, coef_file, start_frame=0):
         end_frame = start_frame + self.n_motions
 
-        coef = dict(np.load(coef_file))
-        coef = {k: torch.from_numpy(coef[k][start_frame:end_frame]).float().to(self.device) for k in ['exp', 'pose']}
+        coef_np = dict(np.load(coef_file))
+        coef = {k: torch.from_numpy(coef_np[k][start_frame:end_frame]).float().to(self.device) for k in ['exp', 'pose']}
+        neck = None
+        if self.use_neck_pose:
+            neck_np = coef_np.get('neck_pose', coef_np.get('neck'))
+            if neck_np is None:
+                neck = torch.zeros((end_frame - start_frame, 3), device=self.device)
+            else:
+                neck = torch.from_numpy(neck_np[start_frame:end_frame]).float().to(self.device)
         if self.rot_repr == 'aa':
             coef_keys = ['exp', 'pose']
         else:
@@ -46,6 +54,9 @@ class StyleExtractor:
         # normalize coef if applicable
         if self.coef_stats is not None:
             coef = {k: (coef[k] - self.coef_stats[f'{k}_mean']) / self.coef_stats[f'{k}_std'] for k in coef_keys}
+            if self.use_neck_pose and neck is not None:
+                if 'neck_mean' in self.coef_stats and 'neck_std' in self.coef_stats:
+                    neck = (neck - self.coef_stats['neck_mean']) / self.coef_stats['neck_std']
 
         if self.no_head_pose:
             if self.rot_repr == 'aa':
@@ -59,6 +70,8 @@ class StyleExtractor:
         if self.model_args.rot_repr == 'aa':
             # Remove mouth rotation over y, z axis
             motion_coef = motion_coef[:, :-2]
+        if self.use_neck_pose:
+            motion_coef = torch.cat([motion_coef, neck], dim=-1)
 
         style_feat = self.model(motion_coef.unsqueeze(0))
         style_feat = style_feat[0].detach().cpu().numpy()

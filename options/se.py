@@ -5,6 +5,10 @@ from pathlib import Path
 def add_model_options(parser: argparse.ArgumentParser):
     parser.add_argument('--rot_repr', type=str, default='aa', choices=['aa'])
     parser.add_argument('--no_head_pose', action='store_true', help='do not use head pose')
+    parser.add_argument('--use_neck_pose', dest='use_neck_pose', action='store_true', default=True,
+                        help='include neck pose (3D) in motion coefficients')
+    parser.add_argument('--no_neck_pose', dest='use_neck_pose', action='store_false',
+                        help='disable neck pose in motion coefficients')
 
     # transformer
     parser.add_argument('--feature_dim', type=int, default=128, help='dimension of the hidden feature')

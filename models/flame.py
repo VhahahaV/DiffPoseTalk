@@ -175,8 +175,8 @@ class FLAME(nn.Module):
                                          self.full_lmk_bary_coords.repeat(vertices.shape[0], 1, 1))
         return landmarks3d
 
-    def forward(self, shape_params=None, expression_params=None, pose_params=None, eye_pose_params=None, pose2rot=True,
-                ignore_global_rot=False, return_lm2d=True, return_lm3d=True):
+    def forward(self, shape_params=None, expression_params=None, pose_params=None, eye_pose_params=None,
+                neck_pose_params=None, pose2rot=True, ignore_global_rot=False, return_lm2d=True, return_lm3d=True):
         """
             Input:
                 shape_params: N X number of shape parameters
@@ -197,16 +197,20 @@ class FLAME(nn.Module):
             if eye_pose_params is None:
                 eye_pose_params = self.eye_pose.expand(batch_size, -1)
             head_pose = pose_params[:, :3] if not ignore_global_rot else torch.zeros_like(pose_params[:, :3])
+            if neck_pose_params is None:
+                neck_pose_params = self.neck_pose.expand(batch_size, -1)
             full_pose = torch.cat(
-                [head_pose, self.neck_pose.expand(batch_size, -1), pose_params[:, 3:], eye_pose_params], dim=1)
+                [head_pose, neck_pose_params, pose_params[:, 3:], eye_pose_params], dim=1)
         else:
             if pose_params is None:
                 pose_params = self.eye_pose_mat.expand(batch_size, -1)
             if eye_pose_params is None:
                 eye_pose_params = self.eye_pose_mat.expand(batch_size, -1)
             head_pose = pose_params[:, :9] if not ignore_global_rot else self.eye_pose_mat.expand(batch_size, -1)[:, :9]
+            if neck_pose_params is None:
+                neck_pose_params = self.neck_pose_mat.expand(batch_size, -1)
             full_pose = torch.cat(
-                [head_pose, self.neck_pose_mat.expand(batch_size, -1), pose_params[:, 9:], eye_pose_params], dim=1)
+                [head_pose, neck_pose_params, pose_params[:, 9:], eye_pose_params], dim=1)
         template_vertices = self.v_template.unsqueeze(0).expand(batch_size, -1, -1)
 
         vertices, _ = lbs(betas, full_pose, template_vertices,

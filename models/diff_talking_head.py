@@ -66,7 +66,10 @@ class DiffTalkingHead(nn.Module):
 
         self.motion_feat_dim = 50
         if args.rot_repr == 'aa':
-            self.motion_feat_dim += 1 if args.no_head_pose else 4
+            pose_dim = 1 if args.no_head_pose else 4
+            if getattr(args, 'use_neck_pose', False):
+                pose_dim += 3
+            self.motion_feat_dim += pose_dim
         else:
             raise ValueError(f'Unknown rotation representation {args.rot_repr}!')
 
@@ -411,7 +414,10 @@ class DenoisingNetwork(nn.Module):
         self.use_style = args.style_enc_ckpt is not None
         self.motion_feat_dim = 50
         if args.rot_repr == 'aa':
-            self.motion_feat_dim += 1 if args.no_head_pose else 4
+            pose_dim = 1 if args.no_head_pose else 4
+            if getattr(args, 'use_neck_pose', False):
+                pose_dim += 3
+            self.motion_feat_dim += pose_dim
         else:
             raise ValueError(f'Unknown rotation representation {args.rot_repr}!')
         self.shape_feat_dim = 100

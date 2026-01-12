@@ -42,6 +42,7 @@ class Demo:
         self.use_indicator = self.model_args.use_indicator
         self.rot_repr = self.model_args.rot_repr
         self.predict_head_pose = not self.model_args.no_head_pose
+        self.use_neck_pose = getattr(self.model_args, 'use_neck_pose', False)
         if self.model.use_style:
             style_dir = Path(self.model_args.style_enc_ckpt)
             style_dir = Path(*style_dir.with_suffix('').parts[-3::2])
@@ -216,7 +217,8 @@ class Demo:
         motion_coef = torch.cat(coef_list, dim=1)
 
         # Step 3: restore to coef dict
-        coef_dict = utils.get_coef_dict(motion_coef, None, self.coef_stats, self.predict_head_pose, self.rot_repr)
+        coef_dict = utils.get_coef_dict(motion_coef, None, self.coef_stats, self.predict_head_pose, self.rot_repr,
+                                        use_neck_pose=self.use_neck_pose)
         if include_shape:
             coef_dict['shape'] = original_shape_coef[None, None].expand(n_repetitions, motion_coef.shape[1], -1)
         return coef_dict

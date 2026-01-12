@@ -27,7 +27,7 @@ warnings.filterwarnings('ignore', message='PySoundFile failed. Trying audioread 
 
 class LmdbDataset(data.Dataset):
     def __init__(self, lmdb_dir, split_file, coef_stats_file=None, coef_fps=25, n_motions=100, crop_strategy='random',
-                 rot_repr='aa'):
+                 rot_repr='aa', use_neck_pose=False):
         self.split_file = split_file
         self.lmdb_dir = Path(lmdb_dir)
         if coef_stats_file is not None:
@@ -46,6 +46,7 @@ class LmdbDataset(data.Dataset):
 
         self.crop_strategy = crop_strategy
         self.rot_representation = rot_repr
+        self.use_neck_pose = use_neck_pose
 
         # Read split file
         self.entries = []
@@ -118,6 +119,10 @@ class LmdbDataset(data.Dataset):
             coef_dict = {k: (coef_dict[k] - self.coef_stats[f'{k}_mean']) / (self.coef_stats[f'{k}_std'] + 1e-9)
                          for k in keys}
 
+        if self.use_neck_pose:
+            coef_dict['neck'] = torch.zeros((coef_dict['exp'].shape[0], 3), dtype=coef_dict['exp'].dtype)
+            keys = keys + ['neck']
+
         # Extract two consecutive audio/coef clips
         audio_pair = [audio[:self.n_audio_samples].clone(), audio[-self.n_audio_samples:].clone()]
         coef_pair = [{k: coef_dict[k][:self.n_motions].clone() for k in keys},
@@ -128,7 +133,7 @@ class LmdbDataset(data.Dataset):
 
 class LmdbDatasetForSE(data.Dataset):
     def __init__(self, lmdb_dir, split_file, coef_stats_file=None, coef_fps=25, n_motions=100, crop_strategy='random',
-                 rot_repr='aa', no_head_pose=False):
+                 rot_repr='aa', no_head_pose=False, use_neck_pose=False):
         self.split_file = split_file
         self.lmdb_dir = Path(lmdb_dir)
         if coef_stats_file is not None:
@@ -148,6 +153,7 @@ class LmdbDatasetForSE(data.Dataset):
         self.crop_strategy = crop_strategy
         self.rot_representation = rot_repr
         self.no_head_pose = no_head_pose
+        self.use_neck_pose = use_neck_pose
 
         # Read split file
         self.entries = defaultdict(list)
@@ -222,6 +228,10 @@ class LmdbDatasetForSE(data.Dataset):
         if self.rot_representation == 'aa':
             # Remove mouth rotation around y, z axis
             motion_coef = motion_coef[:, :-2]
+
+        if self.use_neck_pose:
+            neck_pad = torch.zeros((motion_coef.shape[0], 3), dtype=motion_coef.dtype)
+            motion_coef = torch.cat([motion_coef, neck_pad], dim=-1)
 
         # Extract two consecutive coef clips
         coef_pair = [motion_coef[:self.n_motions].clone(), motion_coef[-self.n_motions:].clone()]

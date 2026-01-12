@@ -48,7 +48,7 @@ def _select_first_available(data: Dict[str, Any], keys) -> Optional[np.ndarray]:
 
 
 def load_flame_coefficients(npz_path: Path, dataset_name: str, target_fps: int = TARGET_FPS) -> Dict[str, Any]:
-    """Load FLAME coefficients with unified schema (exp, jaw, pose, shape)."""
+    """Load FLAME coefficients with unified schema (exp, jaw, neck, pose, shape)."""
     data = dict(np.load(npz_path, allow_pickle=True))
     is_digital_human = 'expcode' in data
 
@@ -57,9 +57,11 @@ def load_flame_coefficients(npz_path: Path, dataset_name: str, target_fps: int =
         posecode = data['posecode']
         shape = data.get('shapecode')
         jaw = posecode[:, 3:4]
+        neck_raw = None
     else:
         exp = _select_first_available(data, ['expr', 'exp'])
         jaw_raw = _select_first_available(data, ['jaw_pose', 'jaw'])
+        neck_raw = _select_first_available(data, ['neck_pose', 'neck'])
         shape = _select_first_available(data, ['shape', 'shapecode', 'shape_params'])
         if jaw_raw is None and 'pose' in data:
             jaw_raw = data['pose'][:, 3:4]
@@ -75,10 +77,15 @@ def load_flame_coefficients(npz_path: Path, dataset_name: str, target_fps: int =
 
     exp = resample_sequence(exp, src_fps, target_fps)
     jaw = resample_sequence(jaw, src_fps, target_fps)
+    neck = resample_sequence(neck_raw, src_fps, target_fps)
     if jaw is None:
         jaw = np.zeros((exp.shape[0], 1), dtype=np.float32)
     else:
         jaw = jaw.astype(np.float32)
+    if neck is None:
+        neck = np.zeros((exp.shape[0], 3), dtype=np.float32)
+    else:
+        neck = neck.astype(np.float32)
 
     pose = np.zeros((exp.shape[0], 6), dtype=np.float32)
     pose[:, 3:4] = jaw[:, :1]
@@ -96,6 +103,7 @@ def load_flame_coefficients(npz_path: Path, dataset_name: str, target_fps: int =
     return {
         'exp': exp.astype(np.float32),
         'jaw': jaw,
+        'neck': neck,
         'pose': pose,
         'shape': shape_vec,
         'fps': target_fps,
